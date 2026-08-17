@@ -14,7 +14,7 @@ export default function SelectProgrammeScreen() {
 
   return (
     <>
-      <PageHeader status="SYS OK" onLogout={handleLogout} showBack={false} />
+      <PageHeader status="" onLogout={handleLogout} showBack={false} />
       <ProgrammeSelect />
     </>
   );

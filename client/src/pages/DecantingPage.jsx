@@ -1,38 +1,54 @@
-// ─────────────────────────────────────────────────────────────
 // src/pages/DecantingPage.jsx
 //
 // Decanting calculator + logging screen for Nourish Our Children.
 // Two-step flow: calculate a preview (no save), then explicitly
 // save the final record. Once saved, records are write-once —
-// this matches the backend's stated design (decanting.service.js).
-// ─────────────────────────────────────────────────────────────
+// matches the backend's write-once design (decanting.service.js).
+//
+// UI is sequential: one step visible at a time (currentStep state),
+// all rendered from this single page/component. Step1-5 are plain
+// presentational components that receive everything via props —
+// there's no router-level navigation between them, so no state is
+// ever lost switching steps.
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
-import PageHeader from '../features/decanting/components/PageHeader';
-import TaskNavGrid from '../features/decanting/components/TaskGrid';
-import StepCard from '../features/decanting/components/StepCard';
-import WeekPicker from '../features/decanting/components/WeekPicker';
-import BagSizeToggle from '../features/decanting/components/BagSizeToggle';
-import ProductLineRow from '../features/decanting/components/ProductLineRow';
-import StatCard from '../features/decanting/components/StatCard';
-import StatusBadge from '../features/decanting/components/StatusBadge';
-import Callout from '../features/decanting/components/Callout';
-import Button from '../features/decanting/components/Button';
+// API layer — real backend calls, not mocked.
 import {
   getProducts,
   calculateDecantingPlan,
   recordDecanting,
 } from '../services/decantingAPI';
-// Shared with ProductLineRow so the two cannot offer different sizes.
-import { STANDARD_SIZES, sizesToKg } from '../features/decanting/components/BagSizes';
 
+// Bag size constants + the label→kg conversion helper.
+import { STANDARD_SIZES, sizesToKg } from '../features/decanting/components/BagSize';
 
+// Persistent nav shell — desktop sidebar / mobile bottom nav.
+// Wraps every activity page (Packing, Collection, Decanting, Delivery).
+import AppShell from '../features/decanting/components/AppShell';
 
-// Factory for a blank product line — keeps the "add another
-// product" button simple and avoids accidentally sharing state
-// between rows.
+// Page-level header — back button, user name/avatar, status, logout.
+import PageHeader from '../features/decanting/components/PageActivityHeader';
+
+// Step progress bar ("Step X of 5").
+import StepProgress from '../features/decanting/components/StepProgress';
+
+// The five step components — presentational only, no state of their own.
+import Step1_SetUpWeek from '../features/decanting/StepPages/Step1_SetUpWeek';
+import Step2_BagSizes from '../features/decanting/StepPages/Step2_BagSizes';
+import Step3_ProductLines from '../features/decanting/StepPages/Step3_ProductLines';
+import Step4_ReviewCalculate from '../features/decanting/StepPages/Step4_ReviewCalculate';
+import Step5_RecordWastage from '../features/decanting/StepPages/Step5_RecordWastage';
+
+// Shared UI components.
+import InfoBanner from '../features/decanting/components/InfoBanner';
+import { Button } from '@/components/ui/button';
+
+const TOTAL_STEPS = 5;
+
+// Factory for a blank product line — keeps "add another product"
+// simple and avoids accidentally sharing state between rows.
 const emptyLine = () => ({
   productId: '',
   requiredKg: '',
@@ -47,6 +63,11 @@ const DecantingPage = () => {
   const navigate = useNavigate();
   const { logout } = useAuth();
 
+  // ── Step navigation ──────────────────────────────────────────
+  // 1 = Set up the week, 2 = Bag sizes, 3 = Product lines,
+  // 4 = Review/calculate preview, 5 = Wastage + save.
+  const [currentStep, setCurrentStep] = useState(1);
+
   // ── Reference data ──────────────────────────────────────────
   const [products, setProducts] = useState([]);
 
@@ -55,19 +76,24 @@ const DecantingPage = () => {
   const [notes, setNotes] = useState('');
 
   // ── Step 2: plan-wide default bag sizes ─────────────────────
-  // All sizes start selected — matches the backend's own default
-  // behaviour when selectedSizes isn't provided at all.
-  const [defaultSizes, setDefaultSizes] = useState(STANDARD_SIZES);
+  // Starts empty — user must actively select sizes rather than
+  // having everything pre-selected for them.
+  const [defaultSizes, setDefaultSizes] = useState([]);
 
   // ── Step 3: repeatable product lines ─────────────────────────
   const [lines, setLines] = useState([emptyLine()]);
 
-  // ── Step 4: calculated result + save state ──────────────────
+  // ── Step 4: calculated result ────────────────────────────────
   const [plan, setPlan] = useState(null);          // result of /calculate
   const [isCalculating, setIsCalculating] = useState(false);
+
+  // ── Step 5: save state ────────────────────────────────────────
   const [isSaving, setIsSaving] = useState(false);
-  const [error, setError] = useState('');
   const [savedSuccess, setSavedSuccess] = useState(false);
+
+  // Shared error banner — used by both step-navigation guards and
+  // the calculate/save API calls, so there's one place errors show.
+  const [error, setError] = useState('');
 
   // Load the product list once on mount.
   // NOTE: reusing the procurement products endpoint as a stopgap —
@@ -127,24 +153,20 @@ const DecantingPage = () => {
           productName: product?.name,
           requiredKg: Number(line.requiredKg),
           // Only send actualBulkKg if it was actually entered —
-          // matches the backend's own optional check
-          // (actualBulkKg !== undefined/null/'').
-          // The weighed bulk now CONSTRAINS the plan rather than just
-          // annotating it — if the sack is short, the backend plans
-          // what can actually be filled and reports the gap. Worth
-          // encouraging the team to always fill this in.
+          // matches the backend's own optional check.
           actualBulkKg: line.actualBulkKg ? Number(line.actualBulkKg) : undefined,
           // Per-line override only sent if the checkbox is on —
           // otherwise the backend falls back to the plan-wide
-          // default automatically (resolveSizes logic).
-          // Converted to kg: the API takes numbers, and these are
-          // display labels. Sending "2kg" made the server read NaN.
+          // default automatically (resolveSizes logic). Converted
+          // to kg since the API takes numbers, not display labels.
           selectedSizes: line.useOwnSizes ? sizesToKg(line.customSizes) : undefined,
           wastageKg: line.wastageKg ? Number(line.wastageKg) : undefined,
         };
       });
 
   // Calls /calculate — a pure preview, nothing is persisted here.
+  // On success, advances the UI straight to Step 4 so the user sees
+  // the result immediately.
   const handleCalculate = async () => {
     setError('');
     const items = buildItemsPayload();
@@ -161,6 +183,7 @@ const DecantingPage = () => {
         items,
       });
       setPlan(result);
+      setCurrentStep(4);
     } catch (err) {
       // Backend throws plain Error messages (e.g. "Bag size cannot
       // exceed 5 kg.") — surface them directly rather than a
@@ -171,7 +194,7 @@ const DecantingPage = () => {
     }
   };
 
-  // Calls POST /api/decanting — this is the actual, irreversible save.
+  // Calls POST /api/decanting — the actual, irreversible save.
   const handleSave = async () => {
     setError('');
 
@@ -181,18 +204,35 @@ const DecantingPage = () => {
     }
     if (!plan) {
       // Force a calculate pass before allowing save — keeps the
-      // two-step "preview then commit" flow honest, rather than
-      // letting someone save numbers they never actually previewed.
+      // two-step "preview then commit" flow honest.
       setError('Calculate the plan before saving.');
+      return;
+    }
+
+    // Wastage sanity check: recording more wastage than a line's
+    // required weight is almost certainly a typo (e.g. 500 instead
+    // of 50), and once saved this record can never be corrected.
+    const invalidWastageLine = lines.find((line) => {
+      if (!line.wastageKg) return false;
+      const wastage = Number(line.wastageKg);
+      const required = Number(line.requiredKg);
+      return required > 0 && wastage > required;
+    });
+
+    if (invalidWastageLine) {
+      const product = products.find(
+        (p) => String(p.id) === String(invalidWastageLine.productId)
+      );
+      setError(
+        `Wastage for ${product?.name || 'a product'} (${invalidWastageLine.wastageKg}kg) can't exceed its required weight (${invalidWastageLine.requiredKg}kg). Please check for a typo.`
+      );
       return;
     }
 
     setIsSaving(true);
     try {
-      // userId is NOT sent from the frontend — the backend pulls
-      // it from the authenticated JWT itself
-      // (recordDecanting(data, userId) — userId comes from req.user.id
-      // in the controller, never trusted from the client).
+      // userId is NOT sent from the frontend — the backend pulls it
+      // from the authenticated JWT itself, never trusted from the client.
       await recordDecanting({
         weekOf,
         notes,
@@ -207,245 +247,120 @@ const DecantingPage = () => {
     }
   };
 
+  // ── Step navigation guards ───────────────────────────────────
+  // "Next" just moves forward, except:
+  //  - Step 1 → 2 requires a week to be selected
+  //  - Step 2 → 3 requires at least one default bag size
+  //  - Step 3 → 4 actually triggers the calculate call (Step 4 is
+  //    the preview, so there's nothing to show without calculating)
+  //  - Step 4 → 5 requires a successful calculation to exist
+  const goNext = () => {
+    setError('');
+
+    if (currentStep === 1 && !weekOf) {
+      setError('Please select which dispatch week this is for.');
+      return;
+    }
+
+    if (currentStep === 2 && defaultSizes.length === 0) {
+      setError('Select at least one default bag size before continuing.');
+      return;
+    }
+
+    if (currentStep === 3) {
+      handleCalculate(); // advances to step 4 itself on success
+      return;
+    }
+
+    if (currentStep === 4 && !hasCalculableRows) {
+      setError('Go back and calculate a plan before continuing.');
+      return;
+    }
+
+    setCurrentStep((s) => Math.min(s + 1, TOTAL_STEPS));
+  };
+
+  const goPrevious = () => {
+    setError('');
+    setCurrentStep((s) => Math.max(s - 1, 1));
+  };
+
+  // Derived values used across steps 4 and 5.
   const linesOverMargin = plan?.summary?.linesOverMargin ?? 0;
   const hasCalculableRows = plan && plan.plans && plan.plans.length > 0;
 
+  // Everything every step component might need, bundled into one
+  // object so each <StepN .../> call below stays short. Individual
+  // step components only destructure the props they actually use.
+  const stepProps = {
+    products,
+    weekOf, setWeekOf,
+    notes, setNotes,
+    defaultSizes, toggleDefaultSize,
+    lines, updateLine, addLine, removeLine,
+    plan, hasCalculableRows, linesOverMargin,
+    isCalculating, isSaving,
+    goNext, goPrevious, handleSave,
+    currentStep, totalSteps: TOTAL_STEPS,
+  };
+
   return (
-    <div className="page-light">
-      <PageHeader
-        showBack
-        onLogout={handleLogout}
-        onInfo={() => navigate('/programmes/noc/info')}
-      />
+    // AppShell renders the persistent nav — desktop sidebar /
+    // mobile bottom tab bar — around every activity page.
+    <AppShell>
+      <div className="decanting-layout">
+        {/* Page-level header: back button, user info, logout. */}
+        <PageHeader
+          showBack
+          onLogout={handleLogout}
+          onInfo={() => navigate('/programmes/noc/info')}
+        />
 
-      <main className="decanting-content">
-        <TaskNavGrid />
-
-        {savedSuccess ? (
-          // ── Post-save state ──────────────────────────────────
-          // Once saved, the form is replaced entirely rather than
-          // left editable — reinforces that the record is now
-          // final (matches the backend's write-once design).
-          <StepCard number="✓" title="Decanting record saved">
-            <p className="form-helper-text" style={{ marginBottom: 16 }}>
-              This record is now final and cannot be edited or deleted.
-            </p>
-            <Button variant="primary" onClick={() => navigate('/programmes/noc')}>
-              Back to Nourish Our Children
-            </Button>
-          </StepCard>
-        ) : (
-          <>
-            <div className="page-title-row">
-              <h1 className="programme-select-heading">Decanting</h1>
-              <p className="programme-select-subtitle">
-                Plan the week's bulk split and log what actually got packed.
+        <main className="decanting-main">
+          {savedSuccess ? (
+            // ── Post-save state ──────────────────────────────────
+            // Once saved, the form is replaced entirely rather than
+            // left editable — reinforces that the record is now
+            // final (matches the backend's write-once design).
+            <div className="decanting-step__intro">
+              <h2 className="decanting-step__title">✓ Decanting record saved</h2>
+              <p className="decanting-step__subtitle" style={{ marginBottom: 16 }}>
+                This record is now final and cannot be edited or deleted.
               </p>
-            </div>
-
-            {/* Single shared error banner for both calculate and
-                save failures — keeps error handling in one place */}
-            {error && (
-              <div className="alert-error">
-                <p>{error}</p>
-              </div>
-            )}
-
-            {/* ── Step 1: which dispatch week this run is for ── */}
-            <StepCard number={1} title="Set up the week">
-              <div className="form-grid-2">
-                <WeekPicker
-                  label="Week of"
-                  required
-                  value={weekOf}
-                  onChange={setWeekOf}
-                  helperText="Which dispatch week is this decanting for?"
-                />
-                <div className="form-group">
-                  <label className="form-label">Notes (optional)</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. new supplier for oats"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                  />
-                  <p className="form-helper-text">Anything unusual about this week's run</p>
-                </div>
-              </div>
-            </StepCard>
-
-            {/* ── Step 2: plan-wide bag size defaults ─────────── */}
-            <StepCard number={2} title="Choose default bag sizes">
-              <p className="form-helper-text" style={{ marginBottom: 16 }}>
-                Applies to every product below. You can override this on any individual row.
-              </p>
-              <div className="bag-size-toggle-group">
-                {STANDARD_SIZES.map((size) => (
-                  <BagSizeToggle
-                    key={size}
-                    label={size}
-                    selected={defaultSizes.includes(size)}
-                    onToggle={() => toggleDefaultSize(size)}
-                  />
-                ))}
-              </div>
-            </StepCard>
-
-            {/* ── Step 3: one row per product ─────────────────── */}
-            <StepCard number={3} title="Add product lines">
-              {lines.map((line, index) => (
-                <ProductLineRow
-                  key={index}
-                  index={index}
-                  products={products}
-                  line={line}
-                  onChange={(updated) => updateLine(index, updated)}
-                  onRemove={() => removeLine(index)}
-                  canRemove={lines.length > 1}
-                />
-              ))}
-
-              <Button variant="secondary" icon="plus" onClick={addLine}>
-                Add another product
-              </Button>
-            </StepCard>
-
-            {/* ── Calculate action — explicitly a preview ─────── */}
-            <div className="decanting-action-row">
-              <Callout>
-                Calculating is just a preview. Nothing is saved until you press{' '}
-                <strong>Save decanting record</strong>.
-              </Callout>
-              <Button
-                variant="primary"
-                icon="calculator"
-                onClick={handleCalculate}
-                disabled={isCalculating}
-              >
-                {isCalculating ? 'Calculating…' : 'Calculate plan'}
+              <Button onClick={() => navigate('/programmes/noc')}>
+                Back to Nourish Our Children
               </Button>
             </div>
-
-            {/* ── Plan preview — read-only display of backend's
-                 calculated response, never recalculated client-side ── */}
-            <StepCard number={null} title="Plan preview">
-              <div className="plan-preview-header">
-                {hasCalculableRows && (
-                  linesOverMargin === 0 ? (
-                    <StatusBadge status="success">All within margin</StatusBadge>
-                  ) : (
-                    <StatusBadge status="warning">
-                      {linesOverMargin} line{linesOverMargin > 1 ? 's' : ''} over margin
-                    </StatusBadge>
-                  )
-                )}
-              </div>
-
-              <div className="stat-card-grid">
-                <StatCard label="Total required" value={`${plan?.summary?.totalRequiredKg ?? 0}kg`} />
-                <StatCard label="Total packed" value={`${plan?.summary?.totalPackedKg ?? 0}kg`} />
-                <StatCard label="Total bags" value={plan?.summary?.totalBags ?? 0} />
-                {/* Surplus/shortfall show "—" rather than 0 when no
-                    lines have entered bulk weight yet, so an empty
-                    plan doesn't look like a confirmed "no shortfall" */}
-                <StatCard label="Surplus" value={hasCalculableRows ? `${plan.summary.totalSurplusKg}kg` : '—'} />
-                <StatCard label="Shortfall" value={hasCalculableRows ? `${plan.summary.totalShortfallKg}kg` : '—'} />
-              </div>
-
-              {!hasCalculableRows && (
-                <p className="form-helper-text">
-                  No calculable rows yet. Add a product and a required weight, then calculate.
+          ) : (
+            <>
+              {/* Page title + subtitle, shown on every step. */}
+              <div className="decanting-step__intro">
+                <h1 className="decanting-step__title">Decanting</h1>
+                <p className="decanting-step__subtitle">
+                  Plan the week's bulk split and log what actually got packed.
                 </p>
-              )}
-
-              {hasCalculableRows && (
-                <div className="plan-preview-lines">
-                  {plan.plans.map((line, i) => (
-                    <div key={i} className="plan-preview-line">
-                      <p className="plan-preview-line-title">
-                        {line.productName || `Product ${i + 1}`}
-                      </p>
-                      <p className="form-helper-text">
-                        {/* Only show bag sizes actually used (count > 0) */}
-                        {Object.entries(line.bags)
-                          .filter(([, count]) => count > 0)
-                          .map(([size, count]) => `${count} × ${size}`)
-                          .join(', ')}
-                        {' — '}
-                        {line.totalBags} bag{line.totalBags !== 1 ? 's' : ''}, packed {line.packedKg}kg
-                      </p>
-                      {line.withinMargin ? (
-                        <StatusBadge status="success">Within margin</StatusBadge>
-                      ) : (
-                        <StatusBadge status="warning">Over margin</StatusBadge>
-                      )}
-                      {/* Only render if actualBulkKg was entered for
-                          this line — matches backend only setting
-                          these fields conditionally */}
-                      {line.surplusKg > 0 && (
-                        <span className="form-helper-text"> · {line.surplusKg}kg surplus</span>
-                      )}
-                      {line.shortfallKg > 0 && (
-                        <span className="form-helper-text"> · {line.shortfallKg}kg shortfall</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </StepCard>
-
-            {/* ── Step 4: wastage + final save ─────────────────── */}
-            <StepCard number={4} title="Record wastage and save">
-              <p className="form-helper-text" style={{ marginBottom: 16 }}>
-                Add any weight lost during decanting (optional), then save the record.
-              </p>
-
-              {/* Wastage inputs only make sense once a plan exists —
-                  no point asking about wastage for a plan that
-                  hasn't been calculated yet */}
-              {hasCalculableRows &&
-                lines
-                  .filter((line) => line.productId && line.requiredKg)
-                  .map((line, index) => {
-                    const product = products.find((p) => String(p.id) === String(line.productId));
-                    return (
-                      <div className="form-group" key={index}>
-                        <label className="form-label">
-                          Wastage for {product?.name || `product ${index + 1}`} (kg)
-                        </label>
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.1"
-                          inputMode="decimal"
-                          className="form-input"
-                          placeholder="Optional"
-                          value={line.wastageKg}
-                          onChange={(e) => updateLine(index, { ...line, wastageKg: e.target.value })}
-                        />
-                      </div>
-                    );
-                  })}
-
-              <div className="decanting-save-row">
-                <p className="form-helper-text">
-                  Once saved, this record is final — it cannot be edited or deleted.
-                </p>
-                <Button
-                  variant="primary"
-                  icon="device-floppy"
-                  onClick={handleSave}
-                  disabled={isSaving || !hasCalculableRows}
-                >
-                  {isSaving ? 'Saving…' : 'Save decanting record'}
-                </Button>
               </div>
-            </StepCard>
-          </>
-        )}
-      </main>
-    </div>
+
+              {/* "Step X of 5" progress bar. */}
+              <StepProgress step={currentStep} totalSteps={TOTAL_STEPS} />
+
+              {/* Single shared error banner for validation, calculate,
+                  and save failures — keeps error handling in one place. */}
+              {error && <InfoBanner variant="error">{error}</InfoBanner>}
+
+              {/* Only the current step's component renders — everything
+                  else is unmounted, but state lives here in the page,
+                  not in the step components, so nothing is lost. */}
+              {currentStep === 1 && <Step1_SetUpWeek {...stepProps} />}
+              {currentStep === 2 && <Step2_BagSizes {...stepProps} />}
+              {currentStep === 3 && <Step3_ProductLines {...stepProps} />}
+              {currentStep === 4 && <Step4_ReviewCalculate {...stepProps} />}
+              {currentStep === 5 && <Step5_RecordWastage {...stepProps} />}
+            </>
+          )}
+        </main>
+      </div>
+    </AppShell>
   );
 };
 

@@ -1,125 +1,99 @@
-// src/components/ProductLineRow.jsx
-import BagSizeToggle from './BagSizeToggle';
+// components/decanting/ProductLineRow.jsx
+import { XIcon } from 'lucide-react';
+import SelectField from '../components/SelectField';
+import BagSizeChip from './BagSizeChip';
+import { STANDARD_SIZES } from './BagSize';
+import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
 
-// Imported rather than redeclared: this file used to keep its own
-// copy of the list, which then diverged from the page's.
-//
-// Case matters. This said './bagSizes' while the file on disk is
-// BagSizes.jsx — fine on a case-insensitive Windows or macOS disk,
-// unresolvable on a Linux CI runner, so `npm run build` failed in
-// CI while working locally. Same trap as the lockfile issue.
-import { STANDARD_SIZES } from './BagSizes';
+export default function ProductLineRow({ index, products, line, onChange, onRemove, canRemove }) {
+  const productOptions = products.map((p) => ({ value: String(p.id), label: p.name }));
 
-const ProductLineRow = ({
-  index,
-  products,
-  line,
-  onChange,
-  onRemove,
-  canRemove,
-}) => {
-  const handleField = (field, value) => {
-    onChange({ ...line, [field]: value });
+  const handleField = (field) => (e) => {
+    onChange({ ...line, [field]: e.target.value });
   };
 
-  const toggleOwnSize = (size) => {
-    const current = line.customSizes || [];
-    const next = current.includes(size)
-      ? current.filter((s) => s !== size)
-      : [...current, size];
+  const toggleCustomSize = (size) => {
+    const next = line.customSizes.includes(size)
+      ? line.customSizes.filter((s) => s !== size)
+      : [...line.customSizes, size];
     onChange({ ...line, customSizes: next });
   };
 
   return (
     <div className="product-line-row">
-      <div className="product-line-row-header">
-        <p className="product-line-row-label">Product {index + 1}</p>
+      <div className="product-line-row__top">
+        <div className="product-line-row__select">
+          <SelectField
+            id={`product-${index}`}
+            label="Product *"
+            value={line.productId}
+            onChange={handleField('productId')}
+            options={[{ value: '', label: 'Select a product' }, ...productOptions]}
+          />
+        </div>
         {canRemove && (
           <button
             type="button"
-            className="product-line-remove"
+            className="product-line-row__remove"
             onClick={onRemove}
-            aria-label={`Remove product ${index + 1}`}
+            aria-label="Remove product line"
           >
-            <i className="ti ti-trash" aria-hidden="true" />
+            <XIcon className="size-4" />
           </button>
         )}
       </div>
 
-      <div className="product-line-fields">
-        <div className="form-group">
-          <label className="form-label">Product</label>
-          <select
-            className="form-select"
-            value={line.productId || ''}
-            onChange={(e) => handleField('productId', e.target.value)}
-          >
-            <option value="" disabled>Choose a product</option>
-            {products.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Required this week (kg)</label>
-          <input
+      <div className="product-line-row__grid">
+        <div className="login-form__field">
+          <Label htmlFor={`required-${index}`}>Required weight (kg) *</Label>
+          <Input
+            id={`required-${index}`}
             type="number"
             min="0"
             step="0.1"
-            className="form-input"
-            placeholder="e.g. 25"
-            value={line.requiredKg || ''}
-            onChange={(e) => handleField('requiredKg', e.target.value)}
+            inputMode="decimal"
+            value={line.requiredKg}
+            onChange={handleField('requiredKg')}
+            placeholder="0.00"
           />
         </div>
-
-        <div className="form-group">
-          {/* No longer just an annotation: the weighed figure now caps
-              the plan, so the team is never told to fill more bags
-              than the sack can actually produce. Labelled to reflect
-              that, since "Optional — for surplus/shortfall" understated
-              why weighing matters. */}
-          <label className="form-label">Weighed bulk bag (kg)</label>
-          <input
+        <div className="login-form__field">
+          <Label htmlFor={`bulk-${index}`}>Actual bulk weighed (kg)</Label>
+          <Input
+            id={`bulk-${index}`}
             type="number"
             min="0"
             step="0.1"
-            className="form-input"
-            placeholder="Weigh the sack"
-            value={line.actualBulkKg || ''}
-            onChange={(e) => handleField('actualBulkKg', e.target.value)}
+            inputMode="decimal"
+            value={line.actualBulkKg}
+            onChange={handleField('actualBulkKg')}
+            placeholder="Optional"
           />
-          <p className="form-helper-text">
-            Weigh it — sacks often hold less than the label says. Leave blank
-            only if it has not been weighed yet.
-          </p>
         </div>
       </div>
 
-      <label className="product-line-override-toggle">
+      <label className="product-line-row__override">
         <input
           type="checkbox"
-          checked={!!line.useOwnSizes}
-          onChange={(e) => handleField('useOwnSizes', e.target.checked)}
+          checked={line.useOwnSizes}
+          onChange={(e) => onChange({ ...line, useOwnSizes: e.target.checked })}
         />
         Use different bag sizes for this product
       </label>
 
       {line.useOwnSizes && (
-        <div className="bag-size-toggle-group">
+        <div className="bag-size-chip-group">
           {STANDARD_SIZES.map((size) => (
-            <BagSizeToggle
+            <BagSizeChip
               key={size}
               label={size}
-              selected={(line.customSizes || []).includes(size)}
-              onToggle={() => toggleOwnSize(size)}
+              selected={line.customSizes.includes(size)}
+              onToggle={() => toggleCustomSize(size)}
             />
           ))}
         </div>
       )}
     </div>
   );
-};
-
-export default ProductLineRow;
+}
